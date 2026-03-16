@@ -118,346 +118,42 @@ fi
 
 sudo chown -R "${SERVICE_USER}:${SERVICE_USER}" "$REPO_DIR"
 
-# ── Step 3b: Local patches ─────────────────────────────────────────────────────
-log "Step 3b: Local patches to proxy source"
+# ── Step 3b: Apply patches ─────────────────────────────────────────────────────
+log "Step 3b: Apply patches to proxy source"
 
-# Patch: silent exhaustion — return empty 200 completion instead of 503 error.
+# Patches live in patches/ next to this script as standard unified diffs.
+# They are applied with `git apply` — no fragile string matching.
 #
-# Without this patch: when all providers fail, the proxy returns:
-#   HTTP 503  {"error":"all providers exhausted"}
-# picoclaw forwards this to Telegram as a visible error message.
+# 01-silent-exhaustion              server.go   — 503 → empty 200 (no Telegram error)
+# 02-per-model-cooldowns-and-*      fallback.go — 429 cools one model, not whole provider
+#                                               — key rotation on 429
+# 03-multi-key-tracker              tracker.go + provider.go — RotateKey / AllKeys
 #
-# With this patch: return a valid OpenAI-format 200 with empty content.
-# picoclaw sees a successful (if empty) response — no error shown in chat.
-# The chain already logs to journald at every failed attempt, so observability
-# is preserved; only the user-visible disruption is eliminated.
+# If a patch is already applied (re-run), git apply --check fails → skip silently.
+# If upstream changed and the patch no longer applies, we warn and continue
+# (build succeeds, feature is just missing until patch is refreshed).
 
-SERVER_FILE="${REPO_DIR}/pkg/proxy/server.go"
-PROVIDER_FILE="${REPO_DIR}/pkg/config/provider.go"
-TRACKER_FILE="${REPO_DIR}/pkg/ratelimit/tracker.go"
-FALLBACK_FILE="${REPO_DIR}/pkg/proxy/fallback.go"
-PATCH_MARKER="// patched: silent exhaustion"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PATCHES_DIR="${SCRIPT_DIR}/patches"
 
-# ── Patch A: per-model cooldowns + key rotation in fallback.go ────────────────
-# Problem: one 429 on groq/llama-3.3 marks the entire "groq" provider as
-# cooling down, blocking all other Groq models for the duration.
-# Fix 1: key 429 cooldowns on "providerID/modelID" instead of "providerID",
-#         so other models from the same provider are still tried.
-# Fix 2: split cooldown check — provider-level blocks the whole provider,
-#         model-level only skips that one model (other models still attempted).
-# Fix 3: rotate to next API key on 429 before setting cooldown,
-#         so the next attempt uses a fresh key (GROQ_API_KEY_2, _3, etc.).
-
-PATCH_MARKER_A="// patched: per-model cooldown"
-
-if ! grep -q "$PATCH_MARKER_A" "$FALLBACK_FILE"; then
-    python3 - "$FALLBACK_FILE" << 'PYEOF'
-import sys
-path = sys.argv[1]
-content = open(path).read()
-errors = []
-
-# Fix 1: split cooldown check — provider-level vs model-level
-old1 = (
-    '\t\t// Skip any provider currently on rate-limit cooldown.\n'
-    '\t\tif fc.RateLimiter.IsOnCooldown(r.ProviderID) {\n'
-    '\t\t\tlog.Printf("fallback: %s on cooldown — skipping", r.ProviderID)\n'
-    '\t\t\tfailedProviders[r.ProviderID] = true\n'
-    '\t\t\tcontinue\n'
-    '\t\t}'
-)
-new1 = (
-    '\t\t// patched: per-model cooldown\n'
-    '\t\t// Provider-level cooldown (auth errors) blocks the whole provider.\n'
-    '\t\tif fc.RateLimiter.IsOnCooldown(r.ProviderID) {\n'
-    '\t\t\tlog.Printf("fallback: %s on cooldown — skipping provider", r.ProviderID)\n'
-    '\t\t\tfailedProviders[r.ProviderID] = true\n'
-    '\t\t\tcontinue\n'
-    '\t\t}\n'
-    '\t\t// Model-level cooldown (429) only skips this model; other models still tried.\n'
-    '\t\tif fc.RateLimiter.IsOnCooldown(r.ProviderID + "/" + r.ModelID) {\n'
-    '\t\t\tlog.Printf("fallback: %s/%s rate-limited — skipping model", r.ProviderID, r.ModelID)\n'
-    '\t\t\tcontinue\n'
-    '\t\t}'
-)
-if old1 in content:
-    content = content.replace(old1, new1, 1)
-else:
-    errors.append("cooldown-check block not found")
-
-# Fix 2: 429 sets per-model cooldown and rotates key
-old2 = (
-    '\t\t\t\tcase 429:\n'
-    '\t\t\t\t\tfc.Catalog.MarkNeedsReverification(r.ProviderID, r.ModelID)\n'
-    '\t\t\t\t\tinfo := ratelimit.ExtractRateLimitInfo(r.ProviderID, resp.Header, resp.Body)\n'
-    '\t\t\t\t\twaitDur := info.WaitDuration()\n'
-    '\t\t\t\t\tuntil := time.Now().Add(waitDur)\n'
-    '\t\t\t\t\tfc.RateLimiter.SetCooldown(r.ProviderID, until)\n'
-    '\t\t\t\t\tlog.Printf("fallback: %s rate limited — cooldown until %s", r.ProviderID, until.Format("15:04:05"))'
-)
-new2 = (
-    '\t\t\t\tcase 429:\n'
-    '\t\t\t\t\tfc.Catalog.MarkNeedsReverification(r.ProviderID, r.ModelID)\n'
-    '\t\t\t\t\tinfo := ratelimit.ExtractRateLimitInfo(r.ProviderID, resp.Header, resp.Body)\n'
-    '\t\t\t\t\twaitDur := info.WaitDuration()\n'
-    '\t\t\t\t\tuntil := time.Now().Add(waitDur)\n'
-    '\t\t\t\t\t// Per-model cooldown: other models from this provider still available.\n'
-    '\t\t\t\t\tfc.RateLimiter.SetCooldown(r.ProviderID+"/"+r.ModelID, until)\n'
-    '\t\t\t\t\t// Rotate API key so next attempt uses a fresh quota slot.\n'
-    '\t\t\t\t\tif providerCfg != nil && providerCfg.NumKeys() > 1 {\n'
-    '\t\t\t\t\t\tnewIdx := fc.RateLimiter.RotateKey(r.ProviderID, providerCfg.NumKeys())\n'
-    '\t\t\t\t\t\tlog.Printf("fallback: %s/%s rate limited — rotated to key slot %d", r.ProviderID, r.ModelID, newIdx+1)\n'
-    '\t\t\t\t\t} else {\n'
-    '\t\t\t\t\t\tlog.Printf("fallback: %s/%s rate limited — cooldown until %s", r.ProviderID, r.ModelID, until.Format("15:04:05"))\n'
-    '\t\t\t\t\t}'
-)
-if old2 in content:
-    content = content.replace(old2, new2, 1)
-else:
-    errors.append("429-case block not found")
-
-# Fix 3: inject active key before callProvider
-old3 = (
-    '\t\tbody := fc.buildBody(r.ProviderID, req.Raw, r.ModelID)\n'
-    '\t\tresp, err := fc.callProvider(ctx, *providerCfg, body)'
-)
-new3 = (
-    '\t\tbody := fc.buildBody(r.ProviderID, req.Raw, r.ModelID)\n'
-    '\t\t// Apply active key slot for providers with multiple API keys.\n'
-    '\t\tcallCfg := *providerCfg\n'
-    '\t\tif keys := providerCfg.AllKeys(); len(keys) > 1 {\n'
-    '\t\t\tkeyIdx := fc.RateLimiter.CurrentKeyIndex(r.ProviderID)\n'
-    '\t\t\tif keyIdx < len(keys) {\n'
-    '\t\t\t\tcallCfg.APIKey = keys[keyIdx]\n'
-    '\t\t\t\tcallCfg.APIKeyEnv = "" // use literal key, skip env lookup\n'
-    '\t\t\t}\n'
-    '\t\t}\n'
-    '\t\tresp, err := fc.callProvider(ctx, callCfg, body)'
-)
-if old3 in content:
-    content = content.replace(old3, new3, 1)
-else:
-    errors.append("callProvider call site not found")
-
-if errors:
-    print("patch-A errors: " + ", ".join(errors), file=sys.stderr)
-    sys.exit(1)
-open(path, 'w').write(content)
-print("patched fallback.go")
-PYEOF
-    if [[ $? -eq 0 ]]; then
-        info "Patched $FALLBACK_FILE — per-model cooldowns + key rotation"
-    else
-        warn "Patch A failed — fallback.go may have changed upstream. Continuing with unpatched source."
-    fi
+if [[ ! -d "$PATCHES_DIR" ]]; then
+    warn "patches/ directory not found next to setup script — skipping Step 3b"
 else
-    info "fallback.go already has per-model cooldown patch — skipping"
-fi
+    for patch_file in "${PATCHES_DIR}"/*.patch; do
+        [[ -f "$patch_file" ]] || continue
+        patch_name="$(basename "$patch_file")"
 
-# ── Patch B: AllKeys / NumKeys on ProviderConfig (provider.go) ────────────────
-# Adds auto-discovery of numbered API key variants:
-#   GROQ_API_KEY   → slot 0 (existing)
-#   GROQ_API_KEY_2 → slot 1  (just add to .env)
-#   GROQ_API_KEY_3 → slot 2  ...
-# No config.yaml changes needed — just add numbered vars to .env.
-
-PATCH_MARKER_B="// patched: AllKeys multi-key"
-
-if ! grep -q "$PATCH_MARKER_B" "$PROVIDER_FILE"; then
-    python3 - "$PROVIDER_FILE" << 'PYEOF'
-import sys
-path = sys.argv[1]
-content = open(path).read()
-
-# Add "fmt" import — provider.go currently has no imports
-if 'import ' not in content:
-    content = content.replace(
-        'package config\n',
-        'package config\n\nimport "fmt"\n',
-        1
-    )
-
-# Append new methods at end of file
-addition = '''
-// patched: AllKeys multi-key
-// AllKeys returns all API keys available for this provider in order.
-// It auto-discovers numbered variants of the base env var:
-//   GROQ_API_KEY, GROQ_API_KEY_2, GROQ_API_KEY_3, ... GROQ_API_KEY_9
-// Add GROQ_API_KEY_2=gsk_... to .env to double the free-tier quota.
-// No config.yaml changes needed.
-func (p *ProviderConfig) AllKeys() []string {
-\tvar keys []string
-\tif p.APIKey != "" {
-\t\tkeys = append(keys, p.APIKey)
-\t}
-\tif p.APIKeyEnv != "" {
-\t\tif v := lookupEnv(p.APIKeyEnv); v != "" {
-\t\t\tkeys = append(keys, v)
-\t\t}
-\t\tfor i := 2; i <= 9; i++ {
-\t\t\tif v := lookupEnv(fmt.Sprintf("%s_%d", p.APIKeyEnv, i)); v != "" {
-\t\t\t\tkeys = append(keys, v)
-\t\t\t}
-\t\t}
-\t}
-\treturn keys
-}
-
-// NumKeys returns the number of API keys available for this provider.
-func (p *ProviderConfig) NumKeys() int {
-\treturn len(p.AllKeys())
-}
-'''
-
-if 'AllKeys' not in content:
-    content = content.rstrip() + '\n' + addition
-    open(path, 'w').write(content)
-    print("patched provider.go")
-else:
-    print("AllKeys already present — skipping")
-PYEOF
-    if [[ $? -eq 0 ]]; then
-        info "Patched $PROVIDER_FILE — AllKeys/NumKeys multi-key support"
-    else
-        warn "Patch B failed — provider.go may have changed upstream. Continuing."
-    fi
-else
-    info "provider.go already has AllKeys patch — skipping"
-fi
-
-# ── Patch C: RotateKey / CurrentKeyIndex on GlobalTracker (tracker.go) ────────
-# Adds per-provider key rotation state and methods used by fallback.go.
-
-PATCH_MARKER_C="// patched: key rotation"
-
-if ! grep -q "$PATCH_MARKER_C" "$TRACKER_FILE"; then
-    python3 - "$TRACKER_FILE" << 'PYEOF'
-import sys
-path = sys.argv[1]
-content = open(path).read()
-errors = []
-
-# Add keyIndices field to GlobalTracker struct
-old1 = (
-    '// GlobalTracker holds per-provider trackers, keyed by provider ID.\n'
-    'type GlobalTracker struct {\n'
-    '\tmu        sync.RWMutex\n'
-    '\ttrackers  map[string]*ProviderTracker\n'
-    '\tcooldowns map[string]time.Time // provider_id → earliest time to retry\n'
-    '}'
-)
-new1 = (
-    '// GlobalTracker holds per-provider trackers, keyed by provider ID.\n'
-    'type GlobalTracker struct {\n'
-    '\tmu         sync.RWMutex\n'
-    '\ttrackers   map[string]*ProviderTracker\n'
-    '\tcooldowns  map[string]time.Time // provider_id → earliest time to retry\n'
-    '\tkeyIndices map[string]int       // patched: key rotation — provider_id → active key index\n'
-    '}'
-)
-if old1 in content:
-    content = content.replace(old1, new1, 1)
-else:
-    errors.append("GlobalTracker struct not found")
-
-# Initialise keyIndices in NewGlobalTracker
-old2 = (
-    '\treturn &GlobalTracker{\n'
-    '\t\ttrackers:  make(map[string]*ProviderTracker),\n'
-    '\t\tcooldowns: make(map[string]time.Time),\n'
-    '\t}'
-)
-new2 = (
-    '\treturn &GlobalTracker{\n'
-    '\t\ttrackers:   make(map[string]*ProviderTracker),\n'
-    '\t\tcooldowns:  make(map[string]time.Time),\n'
-    '\t\tkeyIndices: make(map[string]int),\n'
-    '\t}'
-)
-if old2 in content:
-    content = content.replace(old2, new2, 1)
-else:
-    errors.append("NewGlobalTracker body not found")
-
-# Append new methods at end of file
-addition = '''
-// patched: key rotation
-
-// CurrentKeyIndex returns the active key index (0-based) for the given provider.
-func (g *GlobalTracker) CurrentKeyIndex(providerID string) int {
-\tg.mu.RLock()
-\tdefer g.mu.RUnlock()
-\treturn g.keyIndices[providerID]
-}
-
-// RotateKey advances to the next key slot for the provider and returns the new index.
-// numKeys must equal ProviderConfig.NumKeys() for the provider.
-func (g *GlobalTracker) RotateKey(providerID string, numKeys int) int {
-\tif numKeys <= 1 {
-\t\treturn 0
-\t}
-\tg.mu.Lock()
-\tdefer g.mu.Unlock()
-\tnext := (g.keyIndices[providerID] + 1) % numKeys
-\tg.keyIndices[providerID] = next
-\treturn next
-}
-'''
-
-if 'RotateKey' not in content:
-    content = content.rstrip() + '\n' + addition
-else:
-    errors.append("RotateKey already present — methods not appended")
-
-if errors:
-    print("patch-C errors: " + ", ".join(errors), file=sys.stderr)
-    sys.exit(1)
-open(path, 'w').write(content)
-print("patched tracker.go")
-PYEOF
-    if [[ $? -eq 0 ]]; then
-        info "Patched $TRACKER_FILE — RotateKey/CurrentKeyIndex"
-    else
-        warn "Patch C failed — tracker.go may have changed upstream. Continuing."
-    fi
-else
-    info "tracker.go already has key rotation patch — skipping"
-fi
-
-if ! grep -q "$PATCH_MARKER" "$SERVER_FILE"; then
-    python3 - "$SERVER_FILE" << 'PYEOF'
-import sys
-path = sys.argv[1]
-content = open(path).read()
-
-old = (
-    '\tlog.Printf("fallback chain exhausted: %v", err)\n'
-    '\t\thttp.Error(w, `{"error":"all providers exhausted"}`, http.StatusServiceUnavailable)\n'
-    '\t\treturn'
-)
-new = (
-    '\tlog.Printf("fallback chain exhausted: %v", err)\n'
-    '\t\t// patched: silent exhaustion — return empty completion so client sees no error\n'
-    '\t\tw.Header().Set("Content-Type", "application/json")\n'
-    '\t\tw.WriteHeader(http.StatusOK)\n'
-    '\t\tfmt.Fprintf(w, `{"id":"exhausted","object":"chat.completion","created":%d,"model":"none","choices":[{"index":0,"message":{"role":"assistant","content":""},"finish_reason":"stop"}],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}`, time.Now().Unix())\n'
-    '\t\treturn'
-)
-
-if old in content:
-    open(path, 'w').write(content.replace(old, new, 1))
-    print("patched")
-else:
-    print("target not found — check server.go diff", file=sys.stderr)
-    sys.exit(1)
-PYEOF
-    if [[ $? -eq 0 ]]; then
-        info "Patched $SERVER_FILE — exhaustion returns silent empty completion"
-    else
-        warn "Patch failed — server.go may have changed upstream. Build will use unpatched source."
-    fi
-else
-    info "server.go already patched — skipping"
+        # --check: dry-run to see if patch applies (also detects already-applied)
+        if git -C "$REPO_DIR" apply --check "$patch_file" 2>/dev/null; then
+            git -C "$REPO_DIR" apply "$patch_file"
+            info "Applied $patch_name"
+        elif git -C "$REPO_DIR" apply --check --reverse "$patch_file" 2>/dev/null; then
+            info "$patch_name already applied — skipping"
+        else
+            warn "$patch_name does not apply cleanly — upstream may have changed. Skipping."
+            warn "  To refresh: cd $REPO_DIR && git diff > ${PATCHES_DIR}/${patch_name}"
+        fi
+    done
 fi
 
 # ── Step 4: Build ─────────────────────────────────────────────────────────────

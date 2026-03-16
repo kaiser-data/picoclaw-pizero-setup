@@ -109,15 +109,16 @@ On 429, the proxy rotates to the next slot. Each slot has its own cooldown — o
 
 ## Local patches applied to the proxy
 
-The setup script patches three files in `free-llm-proxy-router` before building:
+Patches live in [`patches/`](patches/) as standard unified diffs applied with `git apply` after cloning — no string manipulation, no code embedded in the setup script. Each patch is reviewable as a plain diff.
 
-| Patch | File | What it fixes |
-|---|---|---|
-| Silent exhaustion | `pkg/proxy/server.go` | Returns empty 200 instead of 503 — no error message in Telegram |
-| Per-model cooldowns | `pkg/proxy/fallback.go` | 429 on one model no longer blocks all models from that provider |
-| Multi-key rotation | `pkg/proxy/fallback.go` + `pkg/ratelimit/tracker.go` + `pkg/config/provider.go` | Rotates API key on 429, discovers `_2`/`_3` variants automatically |
+| Patch file | What it fixes |
+|---|---|
+| `01-silent-exhaustion.patch` | `server.go` — returns empty 200 instead of 503 so Telegram never shows an error |
+| `02-per-model-cooldowns-and-key-rotation.patch` | `fallback.go` — 429 cools one model, not the whole provider; rotates key on 429 |
+| `03-multi-key-tracker.patch` | `tracker.go` + `provider.go` — `RotateKey` / `AllKeys` / `NumKeys` |
 
-All patches are idempotent (re-run safe) and include markers so they survive `git pull`.
+**Re-run safe:** `git apply --check --reverse` detects already-applied patches and skips them.
+**Upstream-change safe:** if a patch no longer applies cleanly, setup warns and continues — the build still succeeds, the feature is just missing until the patch is refreshed.
 
 ---
 
