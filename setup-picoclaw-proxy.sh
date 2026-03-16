@@ -457,11 +457,11 @@ if ! grep -q "precise:" "$CONFIG_FILE"; then
 import sys
 path = sys.argv[1]
 block = (
-    "\n  precise:\n"
-    "    model: \"groq/llama-3.3-70b-versatile\"\n"
-    "    overrides:\n"
-    "      temperature: 0.1\n"
-    "      max_tokens: 400\n"
+    "\n    precise:\n"
+    "      model: \"groq/llama-3.3-70b-versatile\"\n"
+    "      overrides:\n"
+    "        temperature: 0.1\n"
+    "        max_tokens: 400\n"
 )
 content = open(path).read()
 # Insert before fallback: section (known position in config.example.yaml)
