@@ -339,22 +339,55 @@ PICOCLAW_CONFIG="${PICOCLAW_CONFIG_DIR}/config.json"
 if [[ ! -f "$PICOCLAW_CONFIG" ]]; then
     cat > "$PICOCLAW_CONFIG" << JSONEOF
 {
-  "api_base": "http://127.0.0.1:${PROXY_PORT}/v1",
-  "api_key": "not-needed",
-  "model": "${PICOCLAW_MODEL}",
-  "max_tokens": 4096,
-  "temperature": 0.7,
-  "stream": true,
-  "timeout": 60
+  "agents": {
+    "defaults": {
+      "workspace": "~/.picoclaw/workspace",
+      "restrict_to_workspace": true,
+      "model_name": "${PICOCLAW_MODEL}",
+      "max_tokens": 4096,
+      "temperature": 0.7,
+      "max_tool_iterations": 15,
+      "summarize_message_threshold": 20,
+      "summarize_token_percent": 75
+    }
+  },
+  "model_list": [
+    {
+      "model_name": "${PICOCLAW_MODEL}",
+      "model": "${PICOCLAW_MODEL}",
+      "api_key": "not-needed",
+      "api_base": "http://127.0.0.1:${PROXY_PORT}/v1"
+    }
+  ],
+  "channels": {
+    "telegram": {
+      "enabled": false,
+      "token": "YOUR_BOT_TOKEN",
+      "allow_from": ["YOUR_TELEGRAM_USER_ID"]
+    }
+  },
+  "heartbeat": {
+    "enabled": false
+  },
+  "tools": {
+    "exec": { "enabled": true, "enable_deny_patterns": true },
+    "web": { "enabled": true, "duckduckgo": { "enabled": true, "max_results": 5 } },
+    "read_file": { "enabled": true },
+    "write_file": { "enabled": true },
+    "list_dir": { "enabled": true }
+  }
 }
 JSONEOF
+    chmod 600 "$PICOCLAW_CONFIG"
     info "Created $PICOCLAW_CONFIG  (model: ${PICOCLAW_MODEL})"
 else
-    info "$PICOCLAW_CONFIG exists — patching api_base"
+    info "$PICOCLAW_CONFIG exists — patching api_base in model_list"
     tmp=$(mktemp)
     jq --arg base "http://127.0.0.1:${PROXY_PORT}/v1" \
-       '.api_base = $base' \
+       '(.model_list[]? | select(.model_name != null)) .api_base = $base
+        | .api_base = $base' \
        "$PICOCLAW_CONFIG" > "$tmp" && mv "$tmp" "$PICOCLAW_CONFIG"
+    chmod 600 "$PICOCLAW_CONFIG"
     info "Patched api_base -> http://127.0.0.1:${PROXY_PORT}/v1"
 fi
 
