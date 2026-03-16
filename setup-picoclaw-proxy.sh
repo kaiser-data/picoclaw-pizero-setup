@@ -34,7 +34,7 @@ GO_ARCH="arm64"               # Pi Zero 2 W (Cortex-A53, 64-bit OS required)
 # 'adaptive' — dynamically picks the fastest healthy free provider.
 # Recommended for Pi Zero 2 W: minimises first-token latency.
 # Alternative: 'reliable' (pinned to groq/llama-3.3-70b-versatile via agent profile).
-PICOCLAW_MODEL="${PICOCLAW_MODEL:-adaptive}"
+PICOCLAW_MODEL="${PICOCLAW_MODEL:-reliable}"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 log()  { printf '\n[%s] ===  %s\n' "$(date '+%H:%M:%S')" "$*"; }
@@ -346,7 +346,7 @@ if [[ ! -f "$PICOCLAW_CONFIG" ]]; then
       "model_name": "${PICOCLAW_MODEL}",
       "max_tokens": 4096,
       "temperature": 0.7,
-      "max_tool_iterations": 15,
+      "max_tool_iterations": 6,
       "summarize_message_threshold": 20,
       "summarize_token_percent": 75
     }
