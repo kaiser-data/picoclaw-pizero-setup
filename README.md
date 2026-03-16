@@ -53,8 +53,8 @@ Then follow the prompts. The script is idempotent — safe to re-run after chang
 |---|---|
 | 1 | Install prerequisites: `curl git jq make` |
 | 2 | Install Go 1.23 from go.dev if system Go is too old |
-| 3 | Clone / update `free-llm-proxy-router` |
-| 3b | Apply local patches (silent fallback, per-model cooldowns, multi-key rotation) |
+| 3 | Clone `free-llm-proxy-router` pinned to a known-good commit |
+| 3b | Apply `patches/*.patch` via `git apply` |
 | 4 | Build proxy binaries on-device |
 | 5 | Check for picoclaw binary |
 | 6 | Create `~/.free-llm-proxy-router/.env` from template |

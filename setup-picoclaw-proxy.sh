@@ -107,13 +107,23 @@ export PATH="/usr/local/go/bin:${PATH}"
 # ── Step 3: Clone / update repo ───────────────────────────────────────────────
 log "Step 3: Clone/update repo"
 
+# Pinned to the commit the patches were generated against.
+# Bump this after regenerating patches/ against a newer upstream commit.
+PROXY_COMMIT="70fdb74"
+
 if [[ -d "${REPO_DIR}/.git" ]]; then
-    info "Updating $REPO_DIR ..."
-    sudo git -C "$REPO_DIR" pull --ff-only \
-        || warn "git pull failed — continuing with existing code"
+    info "Fetching $REPO_DIR ..."
+    sudo git -C "$REPO_DIR" fetch --quiet \
+        || warn "git fetch failed — continuing with existing code"
+    sudo git -C "$REPO_DIR" checkout --quiet "$PROXY_COMMIT" 2>/dev/null \
+        || warn "Could not checkout $PROXY_COMMIT — continuing with current HEAD"
+    info "Proxy source pinned to $PROXY_COMMIT"
 else
     info "Cloning $REPO_URL -> $REPO_DIR"
     sudo git clone "$REPO_URL" "$REPO_DIR"
+    sudo git -C "$REPO_DIR" checkout --quiet "$PROXY_COMMIT" \
+        || warn "Could not checkout $PROXY_COMMIT — using HEAD"
+    info "Proxy source pinned to $PROXY_COMMIT"
 fi
 
 sudo chown -R "${SERVICE_USER}:${SERVICE_USER}" "$REPO_DIR"
