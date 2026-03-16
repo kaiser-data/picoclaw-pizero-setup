@@ -53,8 +53,7 @@ Then follow the prompts. The script is idempotent — safe to re-run after chang
 |---|---|
 | 1 | Install prerequisites: `curl git jq make` |
 | 2 | Install Go 1.23 from go.dev if system Go is too old |
-| 3 | Clone `free-llm-proxy-router` pinned to a known-good commit |
-| 3b | Apply `patches/*.patch` via `git apply` |
+| 3 | Clone / update `free-llm-proxy-router` |
 | 4 | Build proxy binaries on-device |
 | 5 | Check for picoclaw binary |
 | 6 | Create `~/.free-llm-proxy-router/.env` from template |
@@ -107,18 +106,15 @@ On 429, the proxy rotates to the next slot. Each slot has its own cooldown — o
 
 ---
 
-## Local patches applied to the proxy
+## What's fixed in the proxy
 
-Patches live in [`patches/`](patches/) as standard unified diffs applied with `git apply` after cloning — no string manipulation, no code embedded in the setup script. Each patch is reviewable as a plain diff.
+These improvements are committed directly to [`free-llm-proxy-router`](https://github.com/kaiser-data/free-llm-proxy-router) — no patching at install time.
 
-| Patch file | What it fixes |
+| Fix | What it does |
 |---|---|
-| `01-silent-exhaustion.patch` | `server.go` — returns empty 200 instead of 503 so Telegram never shows an error |
-| `02-per-model-cooldowns-and-key-rotation.patch` | `fallback.go` — 429 cools one model, not the whole provider; rotates key on 429 |
-| `03-multi-key-tracker.patch` | `tracker.go` + `provider.go` — `RotateKey` / `AllKeys` / `NumKeys` |
-
-**Re-run safe:** `git apply --check --reverse` detects already-applied patches and skips them.
-**Upstream-change safe:** if a patch no longer applies cleanly, setup warns and continues — the build still succeeds, the feature is just missing until the patch is refreshed.
+| Silent exhaustion | Returns empty 200 instead of 503 when all providers fail — no error message in Telegram |
+| Per-model cooldowns | 429 on one model cools that model only, not the whole provider |
+| Multi-key rotation | `AllKeys()` discovers `GROQ_API_KEY_2`/`_3`… from `.env`; rotates on 429 |
 
 ---
 

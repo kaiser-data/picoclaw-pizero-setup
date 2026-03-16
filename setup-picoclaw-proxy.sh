@@ -107,64 +107,16 @@ export PATH="/usr/local/go/bin:${PATH}"
 # ── Step 3: Clone / update repo ───────────────────────────────────────────────
 log "Step 3: Clone/update repo"
 
-# Pinned to the commit the patches were generated against.
-# Bump this after regenerating patches/ against a newer upstream commit.
-PROXY_COMMIT="70fdb74"
-
 if [[ -d "${REPO_DIR}/.git" ]]; then
-    info "Fetching $REPO_DIR ..."
-    sudo git -C "$REPO_DIR" fetch --quiet \
-        || warn "git fetch failed — continuing with existing code"
-    sudo git -C "$REPO_DIR" checkout --quiet "$PROXY_COMMIT" 2>/dev/null \
-        || warn "Could not checkout $PROXY_COMMIT — continuing with current HEAD"
-    info "Proxy source pinned to $PROXY_COMMIT"
+    info "Updating $REPO_DIR ..."
+    sudo git -C "$REPO_DIR" pull --ff-only \
+        || warn "git pull failed — continuing with existing code"
 else
     info "Cloning $REPO_URL -> $REPO_DIR"
     sudo git clone "$REPO_URL" "$REPO_DIR"
-    sudo git -C "$REPO_DIR" checkout --quiet "$PROXY_COMMIT" \
-        || warn "Could not checkout $PROXY_COMMIT — using HEAD"
-    info "Proxy source pinned to $PROXY_COMMIT"
 fi
 
 sudo chown -R "${SERVICE_USER}:${SERVICE_USER}" "$REPO_DIR"
-
-# ── Step 3b: Apply patches ─────────────────────────────────────────────────────
-log "Step 3b: Apply patches to proxy source"
-
-# Patches live in patches/ next to this script as standard unified diffs.
-# They are applied with `git apply` — no fragile string matching.
-#
-# 01-silent-exhaustion              server.go   — 503 → empty 200 (no Telegram error)
-# 02-per-model-cooldowns-and-*      fallback.go — 429 cools one model, not whole provider
-#                                               — key rotation on 429
-# 03-multi-key-tracker              tracker.go + provider.go — RotateKey / AllKeys
-#
-# If a patch is already applied (re-run), git apply --check fails → skip silently.
-# If upstream changed and the patch no longer applies, we warn and continue
-# (build succeeds, feature is just missing until patch is refreshed).
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PATCHES_DIR="${SCRIPT_DIR}/patches"
-
-if [[ ! -d "$PATCHES_DIR" ]]; then
-    warn "patches/ directory not found next to setup script — skipping Step 3b"
-else
-    for patch_file in "${PATCHES_DIR}"/*.patch; do
-        [[ -f "$patch_file" ]] || continue
-        patch_name="$(basename "$patch_file")"
-
-        # --check: dry-run to see if patch applies (also detects already-applied)
-        if git -C "$REPO_DIR" apply --check "$patch_file" 2>/dev/null; then
-            git -C "$REPO_DIR" apply "$patch_file"
-            info "Applied $patch_name"
-        elif git -C "$REPO_DIR" apply --check --reverse "$patch_file" 2>/dev/null; then
-            info "$patch_name already applied — skipping"
-        else
-            warn "$patch_name does not apply cleanly — upstream may have changed. Skipping."
-            warn "  To refresh: cd $REPO_DIR && git diff > ${PATCHES_DIR}/${patch_name}"
-        fi
-    done
-fi
 
 # ── Step 4: Build ─────────────────────────────────────────────────────────────
 log "Step 4: Build binaries"
