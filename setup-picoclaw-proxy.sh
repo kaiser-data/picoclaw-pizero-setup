@@ -410,9 +410,7 @@ Type=simple
 User=${SERVICE_USER}
 WorkingDirectory=${HOME}
 
-# Adjust ExecStart if picoclaw uses a different subcommand for daemon mode.
-# Run: picoclaw --help
-ExecStart=${AGENT_BIN} agent --config ${PICOCLAW_CONFIG}
+ExecStart=${AGENT_BIN} gateway
 
 Restart=on-failure
 RestartSec=10
