@@ -452,28 +452,18 @@ fi
 # ── Step 13: precise agent profile ────────────────────────────────────────────
 log "Step 13: 'precise' agent profile in $CONFIG_FILE"
 
-if ! grep -q "precise:" "$CONFIG_FILE"; then
-    python3 - "$CONFIG_FILE" << 'PYEOF'
-import sys
-path = sys.argv[1]
-block = (
-    "\n    precise:\n"
-    "      model: \"groq/llama-3.3-70b-versatile\"\n"
-    "      overrides:\n"
-    "        temperature: 0.1\n"
-    "        max_tokens: 400\n"
-)
-content = open(path).read()
-# Insert before fallback: section (known position in config.example.yaml)
-if '\nfallback:' in content:
-    content = content.replace('\nfallback:', block + '\nfallback:', 1)
-else:
-    content += block  # append if fallback section missing
-open(path, 'w').write(content)
-PYEOF
-    info "Added 'precise' agent profile to $CONFIG_FILE"
+# precise: is now in configs/config.example.yaml upstream — new installs get it
+# automatically. This step just verifies it landed (or patches legacy configs).
+if grep -q "precise:" "$CONFIG_FILE"; then
+    info "'precise' profile present in $CONFIG_FILE"
 else
-    info "'precise' profile already in $CONFIG_FILE"
+    warn "'precise' profile missing — config.yaml may predate upstream fix"
+    warn "Re-run setup to regenerate config, or add manually under proxy.agents:"
+    warn "    precise:"
+    warn "      model: \"groq/llama-3.3-70b-versatile\""
+    warn "      overrides:"
+    warn "        temperature: 0.1"
+    warn "        max_tokens: 400"
 fi
 
 # ── Step 14: ask-precise wrapper script ───────────────────────────────────────
