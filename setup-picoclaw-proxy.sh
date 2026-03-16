@@ -899,14 +899,21 @@ cat << 'NEXTSTEPS'
    # Verify subcommand: picoclaw --help
    sudo systemctl enable --now picoclaw-agent.service
 
- ── multiply free quota with extra keys ───────────────────────────────────────
+ ── multiple keys / key rotation ──────────────────────────────────────────────
    Add numbered variants to ~/.free-llm-proxy-router/.env:
-     GROQ_API_KEY_2=gsk_...        second Groq account → 2× daily limit
-     GROQ_API_KEY_3=gsk_...        third  Groq account → 3× daily limit
-     GEMINI_API_KEY_2=AIza...      same pattern for any provider
+     GROQ_API_KEY_2=gsk_...
+     GROQ_API_KEY_3=gsk_...
+     GEMINI_API_KEY_2=AIza...
 
-   No config.yaml changes. On 429 the proxy rotates to the next key slot
-   automatically. Each slot gets its own cooldown so other slots stay live.
+   On 429 the proxy rotates to the next key slot automatically. Each slot
+   gets its own cooldown so other slots stay live.
+
+   Legitimate use: keys from different people sharing the same setup
+   (household, team) where each person signed up independently.
+
+   WARNING: Creating multiple accounts to bypass rate limits likely violates
+   provider ToS (Groq, Google, GitHub, OpenRouter all prohibit this) and
+   may result in permanent bans. Your risk, your responsibility.
 
  ── precise tool ──────────────────────────────────────────────────────────────
    ask-precise "summarise this in one sentence: <text>"

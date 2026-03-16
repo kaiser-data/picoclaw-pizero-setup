@@ -87,19 +87,23 @@ Add keys for multiple providers — the `adaptive` strategy picks the fastest he
 
 ---
 
-## Multiplying free quota
+## Multiple keys (key rotation)
 
-The proxy auto-discovers numbered key variants in `.env`:
+The proxy supports numbered key variants and rotates across them automatically on 429:
 
 ```bash
 # ~/.free-llm-proxy-router/.env
-GROQ_API_KEY=gsk_first_account
-GROQ_API_KEY_2=gsk_second_account   # 2× daily limit
-GROQ_API_KEY_3=gsk_third_account    # 3× daily limit
-GEMINI_API_KEY_2=AIza...            # same pattern for any provider
+GROQ_API_KEY=gsk_...
+GROQ_API_KEY_2=gsk_...   # picked up automatically
+GROQ_API_KEY_3=gsk_...
+GEMINI_API_KEY_2=AIza...  # same pattern for any provider
 ```
 
 On 429, the proxy rotates to the next slot. Each slot has its own cooldown — one exhausted key doesn't block the others.
+
+**Legitimate use:** different keys from different people sharing the same setup — household members or teammates who each signed up independently with their own account.
+
+> **Warning:** Creating multiple accounts with the same provider specifically to bypass rate limits most likely violates that provider's Terms of Service. Groq, Google, GitHub, and OpenRouter all prohibit this. Doing so is entirely at your own risk and may result in all associated accounts being permanently banned. This project takes no responsibility for ToS violations or account loss.
 
 ---
 
